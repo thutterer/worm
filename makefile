@@ -5,13 +5,20 @@ BIN = worm
 worm: worm.cpp
 	g++ -std=c++11 -pthread -o $(BIN) $(SOURCE) -lncurses
 
-#.PHONY: clean
 clean:
-	\rm -rf $(BIN) *~
+	\rm -rf $(BIN) *~ *.tar
 
 tar:
-	tar cf worm.tar ../worm/
-	#tar cf worm.tar $(SOURCE) $(MAKEFILE)
+	make clean
+	mkdir worm-0.5
+	cp worm.cpp worm-0.5
+	cp makefile worm-0.5
+	cp configure worm-0.5
+	cp ChangeLog worm-0.5
+	cp README worm-0.5
+	cp LICENSE worm-0.5
+	tar cf worm-0.5.tar ./worm-0.5/
+	rm -rf worm-0.5
 
 install:
-	sudo install $(BIN) /usr/bin
+	install $(BIN) $(DESTDIR)/usr/bin

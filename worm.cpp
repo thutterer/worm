@@ -1,3 +1,27 @@
+/*
+The MIT License (MIT)
+
+Copyright (c) 2014 Thomas Hutterer
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
 #include <curses.h>
 #include <stdlib.h>
 #include <time.h>
@@ -192,9 +216,6 @@ void timing(void) {
     else wbkgd(play_window, COLOR_PAIR(9));
     // create first wormpiece
     srand(time(0));
-    //int start_x = (rand() % max_x);
-    //int start_y = (rand() % max_y);
-    //wormhead = new wormpiece(start_x, start_y);
     wormhead = new wormpiece(3, 3);
     is_dead = false;
     int score = 0;
@@ -339,24 +360,32 @@ void controlling(void) {
   while(running) {
     switch (getch()) {
       case KEY_UP:
+      case 'w':
+      case 'W':
         if(!move_y) {
         input_x = 0;
         input_y = -1;
         }
         break;
       case KEY_DOWN:
+      case 's':
+      case 'S':
         if(!move_y) {
         input_x = 0;
         input_y = +1;
         }
         break;
       case KEY_LEFT:
+      case 'a':
+      case 'A':
         if(!move_x) {
         input_x = -1;
         input_y = 0;
         }
         break;
       case KEY_RIGHT:
+      case 'd':
+      case 'D':
         if(!move_x) {
         input_x = +1;
         input_y = 0;
@@ -368,7 +397,6 @@ void controlling(void) {
         break;
       case 'q':
       case 'Q':
-      //case KEY_F(1):
         running = false;
         break;
     }
@@ -410,7 +438,7 @@ int main(void) {
 
   // save playground size
   getmaxyx(play_window, max_y, max_x);
-  max_y = max_y;   // remove 1 so it's still visible
+  max_y = max_y;
   max_x = max_x/2; // a piece of worm, food or wall is 2 chars wide (but only 1 char high)
 
   // create and save playground

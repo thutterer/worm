@@ -337,8 +337,10 @@ void timing(void) {
     timer_start = clock();
 
     // clear the main window
-    clear();
-    refresh();
+    if(!paused) {
+      clear();
+      refresh();
+    }
     // is this the beginning of a new round?
     if(gamestate==starting) {
 
@@ -697,10 +699,10 @@ void controlling(void) {
         break;
       case '3':
         if(in_menu) {
+          paused = true; //without a pause segfault here...fix
           gamemode = network_host;
           ip_hostname[0] = '\0'; nw_port[0] = '\0';
           in_menu = false;
-          paused = true; //without a pause segfault here...fix
           input_box("Port:", nw_port);
           gamestate = starting;
           paused = false;
@@ -708,10 +710,10 @@ void controlling(void) {
         break;
       case '4':
         if(in_menu) {
+          paused = true;
           gamemode = network_client;
           ip_hostname[0] = '\0'; nw_port[0] = '\0';
           in_menu = false;
-          paused = true;
           input_box("IP or hostname", ip_hostname);
           input_box("Port:", nw_port);
           gamestate = starting;
@@ -736,7 +738,6 @@ int main(void) {
   cbreak();
   keypad(stdscr, TRUE);
   start_color();
-  clear();
 
   // set color pairs: id, chars_color, back_color
   init_pair(WALL, COLOR_BLUE, COLOR_WHITE);
@@ -757,7 +758,6 @@ int main(void) {
   // set background of main window
   bkgd(COLOR_PAIR(9));
   color_set(1, 0);
-  refresh();
 
   // launch the actual game routines
   thread timeThread (timing);

@@ -15,7 +15,7 @@ clean:
 tar:
 	make clean
 	mkdir worm-$(VERSION)
-	cp worm.cpp worm-$(VERSION)
+	cp src/worm.cpp worm-$(VERSION)
 	cp makefile worm-$(VERSION)
 	cp configure worm-$(VERSION)
 	cp ChangeLog worm-$(VERSION)

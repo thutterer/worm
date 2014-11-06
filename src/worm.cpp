@@ -30,6 +30,8 @@ SOFTWARE.
 #include <thread>
 #include <chrono>
 
+#include "network.h"
+
 using namespace std;
 
 // prototypes -----------------------------------------------------------------
@@ -43,51 +45,79 @@ const int WALL = 1;
 const int WORMHEAD = 2;
 const int WORM = 3;
 const int FOOD = 4;
-const int INITIAL_MAX_WORMLENGTH = 5;
+const int INITIAL_MAX_WORMLENGTH = 3;
 
 // global enums
-enum gamemode {single, local_multi, network_multi};
+enum gamemodes {not_set, single, local_multi, network_host, network_client};
+enum gamestates {starting, running, stopping, stopped};
 
 // global variables -----------------------------------------------------------
 int max_x, max_y;
-int input_x=0, input_y=1;
-int* playground = 0;
-player* player1;
+int play_x, play_y;
+int* playground = NULL;
+player* player1 = NULL;
+player* player2 = NULL;
 food* foodlist = NULL;
-bool running = true;
-bool paused = false;
+bool no_quit_signal = true;
+bool paused;
 bool is_head;
-WINDOW *play_window;
-WINDOW *score_window;
+bool in_menu;
+//bool in_input;
+WINDOW* play_window = NULL;
+WINDOW* score_window = NULL;
+WINDOW* menu_window = NULL;
+WINDOW* input_window = NULL;
+gamemodes gamemode;
+gamestates gamestate;
+network* nw_serv = NULL;
+network* nw_client = NULL;
+char ip_hostname[20];
+char nw_port[5];
 
-//-----------------------------------------------------------------------------
+// classes --------------------------------------------------------------------
 class wormpiece {
   public:
     wormpiece(int x, int y);
     wormpiece(player* this_player);
-    void draw();
+
     int pos_x, pos_y;
     wormpiece* connected_to;
 };
 
-//-----------------------------------------------------------------------------
 class player {
   public:
-    player(int num, int x, int y);
+    player(int num);
     ~player(void);
     void move(void);
     bool collision(void);
+    bool eats_food(food* this_food);
 
     int number;
     int move_x;
     int move_y;
     int wormlength;
+    int input_x;
+    int input_y;
     int max_wormlength;
 		wormpiece* head;
     int score;
+    int highscore;
     bool is_alive;
 };
 
+class food {
+  public:
+    food(int x, int y);
+    ~food();
+    void draw();
+    int length();
+    int countdown;
+    int pos_x, pos_y;
+    food* next;
+    food* prev;
+};
+
+// class functions ------------------------------------------------------------
 wormpiece::wormpiece(int x, int y) {
   pos_x = x;
   pos_y = y;
@@ -98,29 +128,26 @@ wormpiece::wormpiece(player* this_player) {
   pos_x = this_player->head->pos_x + this_player->move_x;
   pos_y = this_player->head->pos_y + this_player->move_y;
   // check if we crossed the playground border
-  if(pos_x > max_x) pos_x = pos_x - max_x;
-  if(pos_x < 1) pos_x = max_x;
-  if(pos_y > max_y) pos_y = pos_y - max_y;
-  if(pos_y < 1) pos_y = max_y;
+  if(pos_x > play_x) pos_x = pos_x - play_x;
+  if(pos_x < 1) pos_x = play_x;
+  if(pos_y > play_y) pos_y = pos_y - play_y;
+  if(pos_y < 1) pos_y = play_y;
   // attach to old worm
   connected_to = this_player->head;
 }
 
-void wormpiece::draw() {
-  //TODO draw different integers=colors for each player (e.g. number*10+WORM)
-  if(is_head) {
-    playground[xy(pos_x, pos_y)] = WORMHEAD;
-  }
-  else {
-    playground[xy(pos_x, pos_y)] = WORM;
-  }
-}
-
-player::player(int num, int x, int y) {
+player::player(int num) {
   this->number = num;
-	this->move_x = 1;
-	this->move_y = 0;
-  this->head = new wormpiece(x, y);
+  if(this->number == 1) {
+	  this->input_x = 1;
+	  this->input_y = 0;
+    this->head = new wormpiece(3, 3);
+  }
+  else if(this->number == 2) {
+	  this->input_x = -1;
+	  this->input_y = 0;
+    this->head = new wormpiece(play_x-2, play_y-3);
+  }
   this->max_wormlength = INITIAL_MAX_WORMLENGTH;
   this->score = 0;
   this->is_alive = true;
@@ -128,29 +155,36 @@ player::player(int num, int x, int y) {
 
 void player::move() {
   // get movement direction
-  this->move_x = input_x;
-  this->move_y = input_y;
+  this->move_x = this->input_x;
+  this->move_y = this->input_y;
   // grow a new wormpiece in movement direction and make it the new head
   this->head = new wormpiece(this);
   // put the worm in the playground
-  is_head = true; // the head is special for collision detection
   wormpiece* piece = this->head;
   wormlength = 0;
-  do {
-    piece->draw();
+
+  while(piece) {
+    if(piece == this->head) {
+      // prevent player2 head overwriting player1 for a sane collision check
+      if(playground[xy(piece->pos_x, piece->pos_y)] == 0) {
+        playground[xy(piece->pos_x, piece->pos_y)] = WORMHEAD + this->number*10;
+      }
+    }
+    else {
+      playground[xy(piece->pos_x, piece->pos_y)] = WORM + this->number*10;
+    }
     this->wormlength++;
     if(this->wormlength == this->max_wormlength) {
-      delete piece->connected_to;
+      if(piece->connected_to) delete piece->connected_to;
       piece->connected_to = 0;
     }
     piece = piece->connected_to;
-    is_head = false;
-  } while (piece);
+  }
 }
 
 bool player::collision(void) {
   if( (playground[xy(this->head->pos_x, this->head->pos_y)] == WALL) ||
-      (playground[xy(this->head->pos_x, this->head->pos_y)] == WORM) ) {
+      (playground[xy(this->head->pos_x, this->head->pos_y)] % 10 == WORM) ) {
     this->is_alive = false;
     return true;
   }
@@ -159,8 +193,18 @@ bool player::collision(void) {
   }
 }
 
+bool player::eats_food(food* this_food) {
+  if(this_food->pos_x == this->head->pos_x && this_food->pos_y == this->head->pos_y) {
+    this->max_wormlength += 5;
+    this->score += this->wormlength*5;
+    delete this_food;
+    return true;
+  }
+  else {return false;}
+}
+
 player::~player(void){
-  // delete all worm objects
+  // delete all wormpiece objects
   wormpiece* piece = this->head;
   while(piece) {
     wormpiece* nextpiece = piece->connected_to;
@@ -170,17 +214,6 @@ player::~player(void){
   this->head = NULL;
 }
 
-//-----------------------------------------------------------------------------
-class food {
-  public:
-    food(int x, int y);
-    ~food();
-    void draw();
-    unsigned int countdown;
-    unsigned int pos_x, pos_y;
-    food* next;
-    food* prev;
-};
 
 food::food(int x, int y) {
   countdown = 100; // ticks, not seconds
@@ -202,23 +235,37 @@ void food::draw() {
   playground[xy(pos_x, pos_y)] = FOOD;
 }
 
-//-----------------------------------------------------------------------------
-class timer {
-  private:
-    unsigned long begTime;
-  public:
-    void start() {
-      begTime = clock();
-    }
-    unsigned long elapsedTime() {
-      return ((unsigned long) clock() - begTime);
-    }
-    bool isTimeout(unsigned long seconds) {
-      return seconds >= elapsedTime();
-    }
-};
+int food::length() {
+  food* that = this;
+  int count = 0;
+  while(that) {
+    count++;
+    that = that->next;
+  }
+  return count;
+}
 
-//-----------------------------------------------------------------------------
+// functions ------------------------------------------------------------------
+void input_box(char msg[20], char* result) {
+  delwin(input_window);
+  input_window = newwin(4, 24, max_y/2-2, max_x/2-10);
+  wbkgd(input_window, COLOR_PAIR(10));
+  wattrset(input_window, A_BOLD);
+  wcolor_set(input_window, 10, 0);
+  wclear(input_window);
+  wborder(input_window, 0, 0, 0, 0, 0, 0, 0, 0);
+  mvwaddstr(input_window, 1,2, msg);
+  wrefresh(input_window);
+  echo();
+  wcolor_set(input_window, 11, 0);
+  mvwaddstr(input_window, 2,2, "                    ");
+  //TODO use getchar and check each time if the user typed to many chars
+  do {
+    mvwgetstr(input_window, 2,2, result);
+  } while(result[0]=='\0');
+  noecho();
+}
+
 void quit(void) {
   endwin();
 }
@@ -227,36 +274,40 @@ int xy(int x, int y) {
   // the idea here is that the playground array can be a one-dimensional array.
   // xy(3,1) returns 2. (third element in the array)
   // xy(3,4) would return 32 if the playground had 10 columns.
-  return max_x*(y-1) + x - 1;
+  return play_x*(y-1) + x - 1;
+}
+
+bool in_multiplayer(void) {
+  return (gamemode==local_multi || gamemode==network_host || gamemode==network_client);
 }
 
 void draw_level(int level) {
   // draw borders
   if(level==1 || level ==3) {
-    for(int x = 1; x <= max_x; x++) {
+    for(int x = 1; x <= play_x; x++) {
       playground[xy(x,1)] = WALL;
     }
-    for(int x = 1; x <= max_x; x++) {
-      playground[xy(x,max_y)] = WALL;
+    for(int x = 1; x <= play_x; x++) {
+      playground[xy(x,play_y)] = WALL;
     }
-    for(int y = 1; y <= max_y; y++) {
+    for(int y = 1; y <= play_y; y++) {
       playground[xy(1,y)] = WALL;
     }
-    for(int y = 1; y <= max_y; y++) {
-      playground[xy(max_x,y)] = WALL;
+    for(int y = 1; y <= play_y; y++) {
+      playground[xy(play_x,y)] = WALL;
     }
   }
   // draw central block
   if(level==2 || level ==3) {
-    for(int j = max_y*3/7 +1; j <= max_y * 4/7; j++) {
-      for(int i = max_x*2/7 +1; i <= max_x * 5/7; i++) {
+    for(int j = play_y*3/7 +1; j <= play_y * 4/7; j++) {
+      for(int i = play_x*2/7 +1; i <= play_x * 5/7; i++) {
         playground[xy(i,j)] = WALL;
       }
     }
   }
 }
 
-void clean_up(void) {
+void clear_foodlist(void) {
   // delete all food objects
   food* foodpiece = foodlist;
   while(foodpiece) {
@@ -268,95 +319,189 @@ void clean_up(void) {
 }
 
 void timing(void) {
-  unsigned int gamespeed = 200;
-  unsigned int highscore = 0;
-  timer t;
-  t.start();
-  paused = false;
+  int gamespeed = 200;
+  int level;
   chrono::milliseconds ms100(100);
+  srand(time(0));
+
+  getmaxyx(stdscr, max_y, max_x);
+  paused = true;
+  in_menu = true;
+  gamestate = stopped;
 
   // game loop
-  while(running) {
-    // TODO show a menu to choose single or (local/nw) multiplayer
-    //
-    // choose one of four different levels
-    int level = (rand() % 4);
-    if(level==0 || level ==2) wbkgd(play_window, COLOR_PAIR(8));
-    else wbkgd(play_window, COLOR_PAIR(9));
-    // create first wormpiece
-    srand(time(0));
-    player1 = new player(1, 3, 3);
-    int points_per_food = 10;
-    chrono::milliseconds dura(gamespeed);
+  while(no_quit_signal) {
+    // measure time taken to substract it from gamedelay
+    clock_t timer_start, timer_end;
+    double cpu_time_used;
+    timer_start = clock();
 
-    // TODO check here if all players died .. stuff
-    while(player1->is_alive && running) {
-      // are we in pause mode?
-      while(paused && running) {
-        this_thread::sleep_for(ms100);
+    // clear the main window
+    clear();
+    refresh();
+    // is this the beginning of a new round?
+    if(gamestate==starting) {
+
+      getmaxyx(stdscr, max_y, max_x);
+
+      // clear all old food objects
+      clear_foodlist();
+
+      // configure network if needed
+      if(nw_serv) delete nw_serv; nw_serv = NULL;
+      if(nw_client) delete nw_client; nw_client = NULL;
+      if(gamemode==network_host)
+        nw_serv = new server(nw_port);
+      else if(gamemode==network_client)
+        nw_client = new client(nw_port, ip_hostname);
+
+      // negotiate the size of the playground between server and client
+      if(gamemode==network_client) {
+        nw_client->send_int(max_x);
+        nw_client->send_int(max_y);
+        nw_client->receive_int(max_x);
+        nw_client->receive_int(max_y);
+      }
+      else if(gamemode==network_host) {
+        int clients_max_x, clients_max_y;
+        nw_serv->receive_int(clients_max_x);
+        nw_serv->receive_int(clients_max_y);
+        if(clients_max_x > max_x) 
+          clients_max_x = max_x;
+        else
+          max_x = clients_max_x;
+        if(clients_max_y > max_y)
+          clients_max_y = max_y;
+        else
+          max_y = clients_max_y;
+        nw_serv->send_int(clients_max_x);
+        nw_serv->send_int(clients_max_y);
       }
 
+      // (re)create game-window and -array
+      delwin(play_window);
+      if(playground) {delete[] playground; playground = NULL;}
+      play_x = (max_x-10)/2;
+      play_y = max_y-10;
+      play_window = newwin(play_y, play_x*2, 5, 5);
+      playground = new int [play_x * play_y];
+
+      // choose one of four different levels (not on client)
+      if(gamemode!=network_client) level = (rand() % 4);
+      // tell the client which level we play in
+      if(gamemode==network_host) nw_serv->send_int(level);
+      if(gamemode==network_client) nw_client->receive_int(level);
+      // => here is were the game halts when the other side isn't ready yet
+
+      // choose colors depending on level
+      if(level==0 || level ==2) wbkgd(play_window, COLOR_PAIR(8));
+      else wbkgd(play_window, COLOR_PAIR(9));
+
+      // (re)create new window for score
+      delwin(score_window);
+      score_window = newwin(3, play_x*2, 1, 5);
+      wbkgd(score_window, COLOR_PAIR(9));
+      wattrset(score_window, A_BOLD);
+
+      // remove player object from last round
+      if(player1) delete player1; player1 = NULL;
+      if(player2) delete player2; player2 = NULL;
+
+      // create players' worms
+      player1 = new player(1);
+      if(gamemode!=single) player2 = new player(2);
+
+      // now all is ready to have the round running
+      gamestate=running;
+    }
+
+
+    // the in-game stuff like moving the players happens in this block
+    if(!paused && gamestate==running) {
       // clear the hole window
       wclear(play_window);
       // clear the playground
-      for(int p = 0; p < (max_x*max_y); p++) {
+      for(int p = 0; p < (play_x*play_y); p++) {
           playground[p] = 0;
       }
 
-      // move the player(s)
-      player1->move();
-
-      // put the food in the playground. remove old food. detect collision with wormhead.
-      food* foodpiece = foodlist;
-      while(foodpiece) {
-        food* nextpiece = foodpiece->next;
-        if (foodpiece->countdown > 0) {
-          // worm eating food?
-          if(foodpiece->pos_x == player1->head->pos_x && foodpiece->pos_y == player1->head->pos_y) {
-            player1->max_wormlength += 5;
-            player1->score += points_per_food;
-            if(player1->max_wormlength<50) {
-              dura = dura * 9/10;
-              points_per_food *= 2;
-            }
-            delete foodpiece;
-          }
-          else { // not eaten yet? => count down!
-            foodpiece->countdown--;
-            foodpiece->draw();
-          }
-        }
-        else { // countdown is over => delete from list!
-          delete foodpiece;
-        }
-        foodpiece = nextpiece;
+      // send and receive movement infos via network
+      if(gamemode==network_host) {
+        nw_serv->send_input(player1->input_x, player1->input_y);
+        nw_serv->receive_input(player2->input_x, player2->input_y);
+      }
+      else if(gamemode==network_client) {
+        nw_client->receive_input(player1->input_x, player1->input_y);
+        nw_client->send_input(player2->input_x, player2->input_y);
       }
 
-      // put borders in the playground
-      draw_level(level);
+      // move the player(s)
+      if(player1->is_alive) player1->move();
+      if(player2 && player2->is_alive) player2->move();
+
+      // refresh food objects and check if a player is eating one (not on client side) FIXME: how does p2 grow on clientside???
+      if(gamemode!=network_client) {
+        food* foodpiece = foodlist;
+        while(foodpiece) {
+          food* nextpiece = foodpiece->next;
+          if (foodpiece->countdown > 0) {
+            // worm eating food?
+            if( ! (player1->eats_food(foodpiece) || (player2 && player2->eats_food(foodpiece)))) {
+              foodpiece->countdown--;
+              foodpiece->draw();
+            }
+          }
+          else { // countdown is over
+            delete foodpiece;
+          }
+          foodpiece = nextpiece;
+        }
+        draw_level(level);
+      }
+
+      // sync playground to the client
+      if(gamemode==network_host) {
+        nw_serv->send_playground(playground, play_x, play_y);
+      }
+      else if(gamemode==network_client) {
+        nw_client->receive_playground(playground, play_x, play_y);
+      }
 
       // detect collisions
-      player1->collision();
+      if(player2 && player2->is_alive) player2->collision();
+      if(player1->is_alive) player1->collision();
+      // if none lives anymore then remember to exit this round
+      if(! (player1->is_alive || (player2 && player2->is_alive))) gamestate = stopping;
 
       // draw the playground in the window
-      for(int y = 1; y <= max_y; y++) {
-        for(int x = 1; x <= max_x; x++) {
+      for(int y = 1; y <= play_y; y++) {
+        for(int x = 1; x <= play_x; x++) {
           switch(playground[xy(x, y)]) {
             case WALL:
               wcolor_set(play_window, WALL, 0);
               if(level==2) wcolor_set(play_window, 9, 0);
               mvwaddstr(play_window, y-1, (x-1)*2, "  ");
               break;
-            case WORMHEAD:
-              wcolor_set(play_window, WORMHEAD, 0);
-              //if(move_x==1) mvwaddstr(play_window, y-1, (x-1)*2, ": ");
-              //if(move_x==-1) mvwaddstr(play_window, y-1, (x-1)*2, " :");
-              //if(move_y==1) mvwaddstr(play_window, y-1, (x-1)*2, "..");
-              //if(move_y==-1) mvwaddstr(play_window, y-1, (x-1)*2, "..");
+            case WORMHEAD+10:
+              wcolor_set(play_window, WORMHEAD+10, 0);
+              if(player1->move_x==1) mvwaddstr(play_window, y-1, (x-1)*2, ": ");
+              if(player1->move_x==-1) mvwaddstr(play_window, y-1, (x-1)*2, " :");
+              if(player1->move_y==1) mvwaddstr(play_window, y-1, (x-1)*2, "..");
+              if(player1->move_y==-1) mvwaddstr(play_window, y-1, (x-1)*2, "..");
+              break;
+            case WORMHEAD+20:
+              wcolor_set(play_window, WORMHEAD+20, 0);
+              if(player2->move_x==1) mvwaddstr(play_window, y-1, (x-1)*2, ": ");
+              if(player2->move_x==-1) mvwaddstr(play_window, y-1, (x-1)*2, " :");
+              if(player2->move_y==1) mvwaddstr(play_window, y-1, (x-1)*2, "..");
+              if(player2->move_y==-1) mvwaddstr(play_window, y-1, (x-1)*2, "..");
+              break;
+            case WORM+10:
+              wcolor_set(play_window, WORM+10, 0);
               mvwaddstr(play_window, y-1, (x-1)*2, "  ");
               break;
-            case WORM:
-              wcolor_set(play_window, WORM, 0);
+            case WORM+20:
+              wcolor_set(play_window, WORM+20, 0);
               mvwaddstr(play_window, y-1, (x-1)*2, "  ");
               break;
             case FOOD:
@@ -367,72 +512,163 @@ void timing(void) {
         }
       }
 
-      // refresh the window. until now nothing was updated.
-      wrefresh(play_window);
-
-      // refresh score window
-      if(player1->score > highscore) {highscore = player1->score;}
-      mvwprintw(score_window, 0, 1, "Score: %010d\n", player1->score);
-      mvwprintw(score_window, 1, 1, "Best : %010d\n", highscore);
-      wrefresh(score_window);
-
       // randomly create new food for the next iteration
-      for(int i=0; i<3; i++) {
-        if(!(rand() % 50)) {
-          int rand_x = (rand() % max_x);
-          int rand_y = (rand() % max_y);
-          if(playground[xy(rand_x, rand_y)] != WORM && playground[xy(rand_x, rand_y)] != WALL) {
-            new food(rand_x, rand_y);
+      if(gamemode != network_client) {
+        // never have more than 3 on the screen
+        if(!foodlist || foodlist->length() < 3) {
+          if(!(rand() % 10)) {
+            int rand_x = (rand() % play_x);
+            int rand_y = (rand() % play_y);
+            if(playground[xy(rand_x, rand_y)] % 10 != WORM && playground[xy(rand_x, rand_y)] != WALL) {
+              new food(rand_x, rand_y);
+            }
           }
         }
       }
 
-      // clean up dynamic memory if worm died
-      if(!(player1->is_alive)) {
-        clean_up();
+      // refresh the window. until now nothing was updated.
+      wrefresh(play_window);
+
+      // sync score to the client
+      if(gamemode==network_host) {
+        nw_serv->send_int(player1->score);
+        nw_serv->send_int(player2->score);
+      }
+      else if(gamemode==network_client) {
+        nw_client->receive_int(player1->score);
+        nw_client->receive_int(player2->score);
       }
 
-      // wait for a while
+      // refresh score window
+      wclear(score_window);
+      if(player1->score > player1->highscore) {player1->highscore = player1->score;}
+      mvwprintw(score_window, 0, 1, "PLAYER 1");
+      if(!player1->is_alive) mvwprintw(score_window, 0, 10, "DEAD!");
+      mvwprintw(score_window, 1, 1, "Score: %010d\n", player1->score);
+      mvwprintw(score_window, 2, 1, "Best : %010d\n", player1->highscore);
+      if(player2) {
+        if(player2->score > player2->highscore) {player2->highscore = player2->score;}
+        mvwprintw(score_window, 0, play_x*2 -17, "PLAYER 2");
+        if(!player2->is_alive) mvwprintw(score_window, 0, max_x -10, "DEAD!");
+        mvwprintw(score_window, 1, play_x*2 -17, "Score: %010d\n", player2->score);
+        mvwprintw(score_window, 2, play_x*2 -17, "Best : %010d\n", player2->highscore);
+      }
+      wrefresh(score_window);
+    }
+
+    // refresh menu
+    if(in_menu) {
+      delwin(menu_window);
+      menu_window = newwin(10, 28, max_y/2-5, max_x/2-14);
+      wbkgd(menu_window, COLOR_PAIR(10));
+      wattrset(menu_window, A_BOLD);
+      wclear(menu_window);
+      wborder(menu_window, 0, 0, 0, 0, 0, 0, 0, 0);
+      mvwprintw(menu_window, 1, 3, "CurseWorm       v.0.8");
+      mvwprintw(menu_window, 3, 3, "[1] singleplayer");
+      mvwprintw(menu_window, 4, 3, "[2] local multiplayer");
+      mvwprintw(menu_window, 5, 3, "[3] host network game"); //"this is a menu : %010d\n", highscore);
+      mvwprintw(menu_window, 6, 3, "[4] join network game");
+      mvwprintw(menu_window, 7, 3, "[q] quit");
+      wrefresh(menu_window);
+    }
+
+    // exit to menu if there is no living player
+    if(gamestate==stopping) {
+      clear_foodlist();
+      gamemode = not_set;
+      in_menu = true;
+      gamestate = stopped;
+    }
+    else {
+    // wait for a while
+      timer_end = clock();
+      cpu_time_used = ((double) (timer_end - timer_start)) / CLOCKS_PER_SEC * 1000;
+      chrono::milliseconds dura(gamespeed-(int)cpu_time_used);
       this_thread::sleep_for(dura);
     }
   }
-  clean_up();
+  clear_foodlist();
   return;
 }
 
 void controlling(void) {
-  while(running) {
+  // in singleplayer mode the player(1) can control the worm with WASD and the arrow keys
+  // in local multiplayer the player1 contols its worm with WASD and player2 with arrows
+  // in network server mode player1 controls its worm with WASD and arrows are disabled
+  // in network client mode player2 controls its worm with arrows and WASD is disabled
+  while(no_quit_signal) {
     switch (getch()) {
       case KEY_UP:
+        if(gamemode==local_multi || gamemode==network_client){
+          if(!(player2->move_y)) {
+            player2->input_x = 0;
+            player2->input_y = -1;
+          }
+          break;
+        }
+        if(gamemode==network_host) break;
       case 'w':
       case 'W':
-        if(!(player1->move_y)) {
-        input_x = 0;
-        input_y = -1;
+        if(gamemode!=network_client) {
+          if(!(player1->move_y)) {
+            player1->input_x = 0;
+            player1->input_y = -1;
+          }
         }
         break;
       case KEY_DOWN:
+        if(gamemode==local_multi || gamemode==network_client){
+          if(!player2->move_y) {
+            player2->input_x = 0;
+            player2->input_y = +1;
+          }
+          break;
+        }
+        if(gamemode==network_host) break;
       case 's':
       case 'S':
-        if(!player1->move_y) {
-        input_x = 0;
-        input_y = +1;
+        if(gamemode!=network_client) {
+          if(!player1->move_y) {
+            player1->input_x = 0;
+            player1->input_y = +1;
+          }
         }
         break;
       case KEY_LEFT:
+        if(gamemode==local_multi || gamemode==network_client) {
+          if(!player2->move_x) {
+            player2->input_x = -1;
+            player2->input_y = 0;
+          }
+          break;
+        }
+        if(gamemode==network_host) break;
       case 'a':
       case 'A':
-        if(!player1->move_x) {
-        input_x = -1;
-        input_y = 0;
+        if(gamemode!=network_client) {
+          if(!player1->move_x) {
+            player1->input_x = -1;
+            player1->input_y = 0;
+          }
         }
         break;
       case KEY_RIGHT:
+        if(gamemode==local_multi || gamemode==network_client) {
+          if(!player2->move_x) {
+            player2->input_x = +1;
+            player2->input_y = 0;
+          }
+          break;
+        }
+        if(gamemode==network_host) break;
       case 'd':
       case 'D':
-        if(!player1->move_x) {
-        input_x = +1;
-        input_y = 0;
+        if(gamemode!=network_client) {
+          if(!player1->move_x) {
+            player1->input_x = +1;
+            player1->input_y = 0;
+          }
         }
         break;
       case 'p':
@@ -441,7 +677,49 @@ void controlling(void) {
         break;
       case 'q':
       case 'Q':
-        running = false;
+        if(in_menu) no_quit_signal = false;
+        break;
+      case '1':
+        if(in_menu) {
+          gamemode = single;
+          in_menu = false;
+          gamestate = starting;
+          paused = false;
+        }
+        break;
+      case '2':
+        if(in_menu) {
+          gamemode = local_multi;
+          in_menu = false;
+          gamestate = starting;
+          paused = false;
+        }
+        break;
+      case '3':
+        if(in_menu) {
+          gamemode = network_host;
+          ip_hostname[0] = '\0'; nw_port[0] = '\0';
+          in_menu = false;
+          paused = true; //without a pause segfault here...fix
+          input_box("Port:", nw_port);
+          gamestate = starting;
+          paused = false;
+        }
+        break;
+      case '4':
+        if(in_menu) {
+          gamemode = network_client;
+          ip_hostname[0] = '\0'; nw_port[0] = '\0';
+          in_menu = false;
+          paused = true;
+          input_box("IP or hostname", ip_hostname);
+          input_box("Port:", nw_port);
+          gamestate = starting;
+          paused = false;
+        }
+        break;
+      case 27: //Esc-Key
+        in_menu = !in_menu;
         break;
     }
   }
@@ -450,6 +728,7 @@ void controlling(void) {
 
 //-----------------------------------------------------------------------------
 int main(void) {
+  // init curses
   initscr();
   atexit(quit);
   noecho();
@@ -460,34 +739,27 @@ int main(void) {
   clear();
 
   // set color pairs: id, chars_color, back_color
-  init_pair(WALL, COLOR_BLUE, COLOR_BLACK);
-  init_pair(WORMHEAD, COLOR_BLACK, COLOR_YELLOW);
-  init_pair(WORM, COLOR_CYAN, COLOR_YELLOW);
+  init_pair(WALL, COLOR_BLUE, COLOR_WHITE);
+  // player 1 colors
+  init_pair(WORMHEAD+10, COLOR_BLACK, COLOR_YELLOW);
+  init_pair(WORM+10, COLOR_CYAN, COLOR_YELLOW);
+  // player 2 colors
+  init_pair(WORMHEAD+20, COLOR_BLACK, COLOR_GREEN);
+  init_pair(WORM+20, COLOR_CYAN, COLOR_GREEN);
   init_pair(FOOD, COLOR_WHITE, COLOR_BLUE);
-  init_pair(8, COLOR_WHITE, COLOR_BLACK);
-  init_pair(9, COLOR_BLACK, COLOR_WHITE);
+  //level backgrounds
+  init_pair(9, COLOR_WHITE, COLOR_BLACK);
+  init_pair(8, COLOR_BLACK, COLOR_WHITE);
+  //menu colors
+  init_pair(10, COLOR_WHITE, COLOR_BLACK);
+  init_pair(11, COLOR_BLACK, COLOR_WHITE);
+
   // set background of main window
   bkgd(COLOR_PAIR(9));
   color_set(1, 0);
   refresh();
 
-  // create new window for playground
-  getmaxyx(stdscr, max_y, max_x);
-  play_window = newwin(max_y-10, max_x-10, 5, 5);
-  wbkgd(play_window, COLOR_PAIR(9));
-  // create new window for score
-  score_window = newwin(2, max_x-10, 1, 1);
-  wbkgd(score_window, COLOR_PAIR(9));
-  wattrset(score_window, A_BOLD);
-
-  // save playground size
-  getmaxyx(play_window, max_y, max_x);
-  max_x = max_x/2; // a piece of worm, food or wall is 2 chars wide (but only 1 char high)
-
-  // create and save playground
-  playground = new int [max_x * max_y];
-
-  // lauch the actual game routines
+  // launch the actual game routines
   thread timeThread (timing);
   thread controlThread (controlling);   // bar,0 spawns new thread that calls bar(0)
   // wait for threads to finish ...TODO only one of these lines should be needed
@@ -495,11 +767,9 @@ int main(void) {
   timeThread.join();
 
   // do last clean up ... maybe better in quit()
-  delwin(play_window);
   delwin(score_window);
   endwin();
-  delete[] playground;
-  playground = NULL;
+  if(playground) {delete[] playground; playground = NULL;}
   return 0;
 }
 
